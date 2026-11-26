@@ -1,0 +1,41 @@
+cabal-version:      2.4
+name:               rpg-core
+version:            0.1.0.0
+synopsis:           Pure game-math engine for d20-style tabletop RPGs
+description:
+  A lore-free, ruleset-agnostic engine implementing the mathematics of
+  tabletop role-playing games: dice, checks, contests, attacks, damage
+  pipelines, healing, and death tracking. Concrete rules (derived from
+  the SRD 5.1) are supplied as a value of the Ruleset record type, so
+  the same core logic can drive different game systems.
+license:            BSD-3-Clause
+author:             Gdtav
+build-type:         Simple
+
+library
+  exposed-modules:
+    RPG.Core.RNG
+    RPG.Core.Dice
+    RPG.Core.Ruleset
+    RPG.Core.Types
+    RPG.Core.Mechanics
+    RPG.Rulesets.DnD5e
+  hs-source-dirs:   src
+  build-depends:    base >=4.14 && <5
+  default-language: Haskell2010
+  ghc-options:      -Wall
+
+executable rpg-core-demo
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:    base, rpg-core
+  default-language: Haskell2010
+  ghc-options:      -Wall
+
+test-suite rpg-core-test
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test
+  build-depends:    base, rpg-core
+  default-language: Haskell2010
+  ghc-options:      -Wall

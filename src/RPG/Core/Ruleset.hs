@@ -10,8 +10,7 @@ module RPG.Core.Ruleset
   , Modifier
   , Level
   , DC
-  , RollMode(..)
-  , NetRollMode(..)
+  , module RPG.Core.Types
   , Ruleset(..)
   ) where
 
@@ -25,16 +24,6 @@ type Modifier = Int
 type Level = Int
 -- | A difficulty class / target number.
 type DC = Int
-
--- | Circumstances attached to a d20 roll as seen by the caller.
-data RollMode = Normal | Advantage | Disadvantage
-  deriving (Eq, Show)
-
--- | Net effect after the no-stacking rule: any number of advantage and
--- disadvantage sources cancel pairwise; if both are present, the roll is
--- @StraightRoll@. The engine reduces a list of circumstances to this.
-data NetRollMode = StraightRoll | NetAdvantage | NetDisadvantage
-  deriving (Eq, Show)
 
 -- | The complete mathematics of one game system.
 --
@@ -62,4 +51,11 @@ data Ruleset = Ruleset
   , rsInstantDeathAt :: Int -> HitPoints -> Bool
   , rsZeroHpDamage :: Int -> Int -- ^ death-save failures caused by damage at 0 hp
   , rsStableRegain :: Bool -- ^ whether a stable dying creature eventually regains 1 hp
+  , rsConditionEffects :: String -> Maybe ConditionEffects
+    -- ^ how one named condition changes a creature's mechanics
+  , rsExhaustionEffects :: Int -> ConditionEffects
+    -- ^ cumulative-or-per-level effects of an exhaustion level
+  , rsExhaustionKillLevel :: Int -- ^ the level at which exhaustion kills
+  , rsEffectiveHpMax :: Creature -> HitPoints
+    -- ^ hit-point maximum after system effects (e.g. halved at exhaustion 4)
   }

@@ -65,7 +65,9 @@ main = do
   let target0 = Creature { hp = 22, hpMax = 22, tempHp = 0
                          , resistances = noResistances
                          , attitude = Hostile
-                         , deathState = noDeathTracking }
+                         , deathState = noDeathTracking
+                         , conditions = []
+                         , exhaustionLevel = 0 }
   (target1, seed1) <- strike "sneaky strike (advantage)" [Advantage] (str16 + lvl5Prof)
                          longsword target0 (mkSeed 42)
   putStrLn ""

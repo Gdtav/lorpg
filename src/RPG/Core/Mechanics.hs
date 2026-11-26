@@ -7,19 +7,32 @@ module RPG.Core.Mechanics
   ( resolveMode
   , rollD20
   , abilityCheck
+  , savingThrow
   , contest
   , attack
   , applyDamage
+  , saveDamage
   , heal
   , grantTempHp
   , deathSave
   , stabilizeCheck
+  , hasCondition
+  , addCondition
+  , removeCondition
+  , conditionCheckModes
+  , outgoingAttackModes
+  , incomingAttackModes
+  , checkAutoFails
+  , canAct
+  , effectiveSpeed
+  , incomingHitsCritical
+  , changeExhaustion
   ) where
 
 import RPG.Core.Dice (DicePool (..), rollPoolLogged)
+import Data.Maybe (mapMaybe)
 import RPG.Core.RNG (Seed, rollWithin)
 import RPG.Core.Ruleset
-import RPG.Core.Types
 
 -- | Reduce a list of circumstances to one net roll mode. Implements the
 -- reference rule that advantage and disadvantage cancel each other out
@@ -61,6 +74,104 @@ abilityCheck rs modes bonus dc seed0 =
       total = face + bonus
       outcome = if rsCheckSucceeds rs total dc then CheckSuccess else CheckFailure
   in (outcome, logs ++ [CheckRolled total dc outcome], s1)
+
+-- | A saving throw: a check made by a creature against an external
+-- effect. Creatures under conditions that force automatic failure (per
+-- the ruleset) fail without rolling; condition and exhaustion modes
+-- are folded into the roll circumstances.
+savingThrow
+  :: Ruleset -> Creature -> [RollMode] -> Modifier -> DC -> Seed
+  -> (CheckOutcome, [LogEvent], Seed)
+savingThrow rs c modes bonus dc seed0
+  | any ceAutoFailSaves (activeEffects rs c) =
+      (CheckFailure, [SaveRolled (-1) dc CheckFailure], seed0)
+  | otherwise =
+      let extra = [ceSaveMode e | e <- activeEffects rs c, ceSaveMode e /= Normal]
+          (outcome, logs, s1) =
+            abilityCheck rs (modes ++ extra) bonus dc seed0
+      in (outcome, logs ++ [SaveRolled bonus dc outcome], s1)
+
+-- | Damage from an effect that allows a saving throw for reduced harm:
+-- full damage on a failure, half (rounded down) on a success.
+saveDamage :: Ruleset -> CheckOutcome -> Damage -> Damage
+saveDamage _rs outcome dm = case outcome of
+  CheckFailure -> dm
+  CheckSuccess -> dm { damageAmount = damageAmount dm `div` 2 }
+
+-- | All condition/exhaustion effects currently applying to a creature.
+-- Exhaustion effects are cumulative in the reference rules (a creature
+-- at level 2 suffers both the level 1 and level 2 effects), so every
+-- level up to the creature's current one is listed.
+activeEffects :: Ruleset -> Creature -> [ConditionEffects]
+activeEffects rs c =
+  mapMaybe (rsConditionEffects rs) (conditions c)
+  ++ [rsExhaustionEffects rs lvl | lvl <- [1 .. exhaustionLevel c]]
+
+-- | Circumstances the creature's active effects impose on its ability
+-- checks (e.g. exhaustion level 1 or poisoned).
+conditionCheckModes :: Ruleset -> Creature -> [RollMode]
+conditionCheckModes rs c =
+  [ceCheckMode e | e <- activeEffects rs c, ceCheckMode e /= Normal]
+
+-- | Circumstances imposed on attack rolls the creature makes.
+outgoingAttackModes :: Ruleset -> Creature -> [RollMode]
+outgoingAttackModes rs c =
+  [ceOutgoingAttacks e | e <- activeEffects rs c, ceOutgoingAttacks e /= Normal]
+
+-- | Circumstances imposed on attack rolls made against the creature
+-- (e.g. attacks against a blinded creature have advantage).
+incomingAttackModes :: Ruleset -> Creature -> [RollMode]
+incomingAttackModes rs c =
+  [ceIncomingAttacks e | e <- activeEffects rs c, ceIncomingAttacks e /= Normal]
+
+-- | Whether an ability check with the given tag automatically fails
+-- for this creature (e.g. sight checks while blinded).
+checkAutoFails :: Ruleset -> Creature -> String -> Bool
+checkAutoFails rs c tag =
+  any (elem tag . ceAutoFailCheckTags) (activeEffects rs c)
+
+-- | Whether the creature can take actions and reactions at all.
+canAct :: Ruleset -> Creature -> Bool
+canAct rs c =
+  not (any ceIncapacitated (activeEffects rs c))
+  && not (dead (deathState c))
+
+-- | Effective speed given a base value. Adverse effects never stack:
+-- the worst multiplier in play wins (0 for grappled or exhaustion 5,
+-- 0.5 for halved speed).
+effectiveSpeed :: Ruleset -> Creature -> Double -> Double
+effectiveSpeed rs c base =
+  base * minimum (1 : [ceSpeedMultiplier e | e <- activeEffects rs c])
+
+-- | Whether hits against the creature (from within reach) become
+-- critical hits, per the ruleset's conditions.
+incomingHitsCritical :: Ruleset -> Creature -> Bool
+incomingHitsCritical rs c = any ceIncomingCritical (activeEffects rs c)
+
+hasCondition :: Creature -> String -> Bool
+hasCondition c name = name `elem` conditions c
+
+addCondition :: Creature -> String -> (Creature, LogEvent)
+addCondition c name
+  | hasCondition c name = (c, ConditionApplied name)
+  | otherwise = (c { conditions = conditions c ++ [name] }, ConditionApplied name)
+
+removeCondition :: Creature -> String -> (Creature, LogEvent)
+removeCondition c name
+  | hasCondition c name =
+      (c { conditions = filter (/= name) (conditions c) }, ConditionRemoved name)
+  | otherwise = (c, ConditionRemoved name)
+
+-- | Raise (positive delta) or lower exhaustion. Reaching the ruleset's
+-- kill level (six in the reference game) kills the creature outright.
+changeExhaustion :: Ruleset -> Creature -> Int -> (Creature, LogEvent)
+changeExhaustion rs c delta =
+  let lvl = max 0 (exhaustionLevel c + delta)
+      c1 = c { exhaustionLevel = lvl }
+  in if lvl >= rsExhaustionKillLevel rs
+       then (c1 { deathState = (deathState c1) { dead = True } }
+            , ExhaustionChanged lvl)
+       else (c1, ExhaustionChanged lvl)
 
 -- | Two opposed checks; higher total wins, exact ties keep the status quo.
 contest
@@ -126,7 +237,7 @@ applyDamage rs critical c0 dmg0 =
       hp' = max 0 (hp c0 - toHp)
       remaining = toHp - (hp c0 `max` 0)
       wasDown = hp c0 <= 0
-      instant = rsInstantDeathAt rs remaining (hpMax c0)
+      instant = rsInstantDeathAt rs remaining (rsEffectiveHpMax rs c0)
       c2 = c1 { hp = hp' }
       c3 = if wasDown && raw > 0
              then let f = rsZeroHpDamage rs (if critical then 1 else 0)
@@ -149,9 +260,9 @@ applyDamage rs critical c0 dmg0 =
 
 -- | Restore hit points, capped at the maximum. Receiving healing clears
 -- death-save tracking in the reference rules.
-heal :: Creature -> HitPoints -> (Creature, LogEvent)
-heal c amount =
-  let gained = min amount (hpMax c - hp c)
+heal :: Ruleset -> Creature -> HitPoints -> (Creature, LogEvent)
+heal rs c amount =
+  let gained = max 0 (min amount (rsEffectiveHpMax rs c - hp c))
       c' = c { hp = hp c + gained
              , deathState = noDeathTracking
              }
@@ -177,7 +288,7 @@ deathSave rs c seed0
           threshold = rsDeathThreshold rs
       in case rsDeathSaveRegain rs face of
          Just n ->
-           let (c', ev) = heal c n
+           let (c', ev) = heal rs c n
            in (c', [DeathSaveRolled face True, ev], s1)
          Nothing
            | deathSuccesses ds' >= threshold ->

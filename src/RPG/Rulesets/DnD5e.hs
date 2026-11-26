@@ -27,10 +27,12 @@ module RPG.Rulesets.DnD5e
   , spellAttackBonus
   , Difficulty(..)
   , standardDC
+  , conditionEffects
+  , exhaustionEffects
+  , srdConditions
   ) where
 
 import RPG.Core.Ruleset
-import RPG.Core.Types
 
 dnd5e :: Ruleset
 dnd5e = Ruleset
@@ -57,6 +59,9 @@ dnd5e = Ruleset
                   then d { damageAmount = damageAmount d `div` 2 } else d
       , \d c -> if damageType d `elem` vulnerableTypes (resistances c)
                   then d { damageAmount = damageAmount d * 2 } else d
+      , \d c -> if any (\cond -> maybe False ceDamageResistedAll
+                          (conditionEffects cond)) (conditions c)
+                  then d { damageAmount = damageAmount d `div` 2 } else d
       , \d _ -> d { damageAmount = max 0 (damageAmount d) }
       ]
   , rsDeathSavesEnabled = True
@@ -68,7 +73,101 @@ dnd5e = Ruleset
   , rsInstantDeathAt = \remaining hpMax' -> remaining >= hpMax'
   , rsZeroHpDamage = \criticalExtra -> 1 + criticalExtra
   , rsStableRegain = True
+  , rsConditionEffects = conditionEffects
+  , rsExhaustionEffects = exhaustionEffects
+  , rsExhaustionKillLevel = 6
+  , rsEffectiveHpMax = \c ->
+      if exhaustionLevel c >= 4 then hpMax c `div` 2 else hpMax c
   }
+
+-- | Conditions from the SRD appendix, reduced to their mechanical
+-- consequences. Social or narrative clauses (charmed, frightened's
+-- line-of-sight restriction) are left to the caller; what matters to
+-- the engine is how dice change.
+conditionEffects :: String -> Maybe ConditionEffects
+conditionEffects name = case name of
+  "blinded" -> Just noConditionEffects
+    { ceIncomingAttacks = Advantage
+    , ceOutgoingAttacks = Disadvantage
+    , ceAutoFailCheckTags = ["sight"]
+    }
+  "charmed" -> Just noConditionEffects
+  "deafened" -> Just noConditionEffects
+    { ceAutoFailCheckTags = ["hearing"] }
+  "frightened" -> Just noConditionEffects
+    { ceCheckMode = Disadvantage
+    , ceOutgoingAttacks = Disadvantage
+    }
+  "grappled" -> Just noConditionEffects { ceSpeedMultiplier = 0 }
+  "incapacitated" -> Just noConditionEffects { ceIncapacitated = True }
+  "invisible" -> Just noConditionEffects
+    { ceIncomingAttacks = Disadvantage
+    , ceOutgoingAttacks = Advantage
+    }
+  "paralyzed" -> Just noConditionEffects
+    { ceIncapacitated = True
+    , ceAutoFailSaves = True
+    , ceIncomingAttacks = Advantage
+    , ceIncomingCritical = True
+    , ceSpeedMultiplier = 0
+    }
+  "petrified" -> Just noConditionEffects
+    { ceIncapacitated = True
+    , ceAutoFailSaves = True
+    , ceIncomingAttacks = Advantage
+    , ceDamageResistedAll = True
+    , ceSpeedMultiplier = 0
+    }
+  "poisoned" -> Just noConditionEffects
+    { ceCheckMode = Disadvantage
+    , ceOutgoingAttacks = Disadvantage
+    }
+  "prone" -> Just noConditionEffects
+    { ceIncomingAttacks = Advantage
+    , ceOutgoingAttacks = Disadvantage
+    }
+  "restrained" -> Just noConditionEffects
+    { ceIncomingAttacks = Advantage
+    , ceOutgoingAttacks = Disadvantage
+    , ceSaveMode = Disadvantage
+    , ceSpeedMultiplier = 0
+    }
+  "stunned" -> Just noConditionEffects
+    { ceIncapacitated = True
+    , ceAutoFailSaves = True
+    , ceIncomingAttacks = Advantage
+    , ceSpeedMultiplier = 0
+    }
+  "unconscious" -> Just noConditionEffects
+    { ceIncapacitated = True
+    , ceAutoFailSaves = True
+    , ceIncomingAttacks = Advantage
+    , ceIncomingCritical = True
+    , ceSpeedMultiplier = 0
+    }
+  _ -> Nothing
+
+srdConditions :: [String]
+srdConditions =
+  [ "blinded", "charmed", "deafened", "frightened", "grappled"
+  , "incapacitated", "invisible", "paralyzed", "petrified", "poisoned"
+  , "prone", "restrained", "stunned", "unconscious"
+  ]
+
+-- | The six-level exhaustion ladder. Effects are cumulative: a creature
+-- at level 3 suffers the levels 1-3 rows together, so 'Mechanics'
+-- queries every level up to the creature's current one.
+exhaustionEffects :: Int -> ConditionEffects
+exhaustionEffects lvl = case lvl of
+  1 -> noConditionEffects { ceCheckMode = Disadvantage }
+  2 -> noConditionEffects { ceSpeedMultiplier = 0.5 }
+  3 -> noConditionEffects
+         { ceOutgoingAttacks = Disadvantage
+         , ceSaveMode = Disadvantage
+         }
+  4 -> noConditionEffects
+  5 -> noConditionEffects { ceSpeedMultiplier = 0 }
+  _ -> noConditionEffects
 
 -- | @(score - 10) / 2@ rounding down; valid for any integer score.
 abilityMod :: Score -> Modifier

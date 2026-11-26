@@ -1,10 +1,10 @@
 module Main (main) where
 
 import RPG.Core.Dice
+import RPG.Core.Initiative
 import RPG.Core.Mechanics
 import RPG.Core.RNG
 import RPG.Core.Ruleset
-import RPG.Core.Types
 import RPG.Rulesets.DnD5e
 
 type Failure = String
@@ -32,6 +32,8 @@ mkCombatant cur mx = Creature
   , resistances = noResistances
   , attitude = Hostile
   , deathState = noDeathTracking
+  , conditions = []
+  , exhaustionLevel = 0
   }
 
 dmg :: Int -> DamageType -> Damage
@@ -111,11 +113,11 @@ main = do
               check "remaining < max leaves dying" (hp c2 == 0 && not (dead (deathState c2)))
           , hoist "healing" $ do
               let (c1, _) = applyDamage rs False (mkCombatant 10 12) (dmg 5 fire)
-                  (c2, ev) = heal c1 9
+                  (c2, ev) = heal rs c1 9
               checkEq "capped at max" 12 (hp c2)
               checkEq "log amount" 7 (case ev of HealingApplied n _ -> n; _ -> -1)
               let dying = (mkCombatant 0 10) { deathState = DeathTracking 1 2 False False }
-                  (c3, _) = heal dying 3
+                  (c3, _) = heal rs dying 3
               check "healing clears death tracking" (deathState c3 == noDeathTracking && hp c3 == 3)
           , hoist "death save faces" $ do
               checkEq "face 10 succeeds" (1, 0) (rsDeathSaveFace rs 10 undefined)
@@ -171,7 +173,79 @@ main = do
               in hoist "pool semantics" $
                  check "faces counted" (length faces == 3)
                  >> check "total = faces + mod" (total == sum faces + 2)
+          , hoist "conditions" $ do
+              check "srd conditions all defined"
+                (all (\c -> conditionEffects c /= Nothing) srdConditions)
+              let (blinded, _) = addCondition (mkCombatant 10 10) "blinded"
+              check "blinded: incoming advantage"
+                (incomingAttackModes rs blinded == [Advantage])
+              check "blinded: outgoing disadvantage"
+                (outgoingAttackModes rs blinded == [Disadvantage])
+              check "blinded: sight checks auto-fail"
+                (checkAutoFails rs blinded "sight")
+              check "unblinded: sight checks fine"
+                (not (checkAutoFails rs (mkCombatant 10 10) "sight"))
+              let (invisible, _) = addCondition (mkCombatant 10 10) "invisible"
+              check "invisible: incoming disadvantage"
+                (incomingAttackModes rs invisible == [Disadvantage])
+              let (grappled, _) = addCondition (mkCombatant 10 10) "grappled"
+              checkEq "grappled: speed zero" 0 (effectiveSpeed rs grappled 30)
+              let (incap, _) = addCondition (mkCombatant 10 10) "incapacitated"
+              check "incapacitated cannot act" (not (canAct rs incap))
+              check "healthy can act" (canAct rs (mkCombatant 10 10))
+              let (para, _) = addCondition (mkCombatant 10 10) "paralyzed"
+              check "paralyzed: hits become critical"
+                (incomingHitsCritical rs para)
+              check "paralyzed: saves auto-fail"
+                (savingThrow rs para [] 0 10 (mkSeed 1) `seqOfOutcome` CheckFailure)
+              let (clean, _) = removeCondition para "paralyzed"
+              check "condition removed" (not (hasCondition clean "paralyzed"))
+          , hoist "condition damage resistance" $ do
+              let (stone, _) = addCondition (mkCombatant 20 20) "petrified"
+              checkEq "petrified halves all damage" 10
+                (hp (fst (applyDamage rs False stone (dmg 20 slash))))
+          , hoist "exhaustion" $ do
+              let ex1 = (mkCombatant 10 10) { exhaustionLevel = 1 }
+              check "level 1: disadvantage on checks"
+                (conditionCheckModes rs ex1 == [Disadvantage])
+              let ex3 = (mkCombatant 10 10) { exhaustionLevel = 3 }
+              check "level 3: cumulative check modes"
+                (conditionCheckModes rs ex3 == [Disadvantage])
+              check "level 3: disadvantage on attacks"
+                (outgoingAttackModes rs ex3 == [Disadvantage])
+              let ex2 = (mkCombatant 10 10) { exhaustionLevel = 2 }
+              checkEq "level 2: speed halved" 15 (effectiveSpeed rs ex2 30)
+              let ex4 = (mkCombatant 3 10) { exhaustionLevel = 4 }
+              checkEq "level 4: hp max halved" 5 (rsEffectiveHpMax rs ex4)
+              checkEq "level 4: heal caps at halved max" 5
+                (hp (fst (heal rs ex4 99)))
+              let (ex6, _) = changeExhaustion rs (mkCombatant 10 10) 6
+              check "level 6 kills" (dead (deathState ex6))
+              let (recovered, _) = changeExhaustion rs ex2 (-1)
+              checkEq "recovery reduces level" 1 (exhaustionLevel recovered)
+          , hoist "saving throws" $ do
+              let c = mkCombatant 10 10
+                  (ok, _, _) = savingThrow rs c [] 9 15 (mkSeed 3)
+              check "save total meet-or-beat"
+                (ok == CheckSuccess || ok == CheckFailure)
+              check "half on success"
+                (damageAmount (saveDamage rs CheckSuccess (dmg 25 fire)) == 12)
+              check "full on failure"
+                (damageAmount (saveDamage rs CheckFailure (dmg 25 fire)) == 25)
+          , hoist "initiative order" $ do
+              let (order, _, _) = orderInitiative
+                    [(("A" :: String), 5), ("B", 0), ("C", 5)] (mkSeed 11)
+              check "three participants ranked" (length order == 3)
+              let totals = map snd order
+              check "descending order"
+                (and (zipWith (>=) totals (drop 1 totals)))
+              check "face within d20 range"
+                (all (\t -> t >= 1 && t <= 25) totals)
+              check "round order fixed"
+                (roundOrder [1 :: Int, 2] 2 == [[1, 2], [1, 2]])
           ]
   if null results
     then putStrLn "All tests passed."
     else mapM_ putStrLn results >> putStrLn (show (length results) ++ " failure(s).")
+  where
+    seqOfOutcome (o, _, _) res = o == res

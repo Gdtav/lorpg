@@ -13,10 +13,12 @@ no product identity, names, spell lists, or lore are included.
 ```
 src/RPG/Core/RNG.hs        pure deterministic PRNG (SplitMix64), swappable
 src/RPG/Core/Dice.hs       dice pools, logged rolls, EV/range algebra
-src/RPG/Core/Types.hs      creature/HP/damage state, structured log events
+src/RPG/Core/Types.hs      creature/HP/condition state, structured log events
 src/RPG/Core/Ruleset.hs    the Ruleset record: one game system's formulas
-src/RPG/Core/Mechanics.hs  resolution engine (checks, contests, attacks,
-                           damage, healing, death saves) — ruleset-agnostic
+src/RPG/Core/Mechanics.hs  resolution engine (checks, saves, contests,
+                           attacks, damage, healing, death saves,
+                           conditions, exhaustion) — ruleset-agnostic
+src/RPG/Core/Initiative.hs turn order: initiative rolls and round ranking
 src/RPG/Rulesets/DnD5e.hs  SRD 5.1 instantiation of Ruleset
 ```
 
@@ -30,8 +32,9 @@ Key invariants:
   and content packs are the caller's job.
 * **Rules are data.** A different tabletop system is a new `Ruleset`
   value: supply its ability-score curve, proficiency table, hit/miss
-  semantics, damage mitigation order, and death rules. Nothing in
-  `Mechanics` references any concrete rule.
+  semantics, damage mitigation order, death rules, condition effects,
+  and exhaustion ladder. Nothing in `Mechanics` references any concrete
+  rule.
 
 ## Rules encoded by the SRD 5.1 ruleset
 
@@ -51,6 +54,20 @@ Key invariants:
 * Death saves: DC 10; three successes stabilize, three failures die;
   natural 20 restores 1 hp, natural 1 counts as two failures; healing
   resets the counters.
+* Conditions (blinded, charmed, deafened, frightened, grappled,
+  incapacitated, invisible, paralyzed, petrified, poisoned, prone,
+  restrained, stunned, unconscious) reduced to their dice-and-movement
+  consequences: incoming/outgoing attack-roll modes, auto-failed saves
+  and sight/hearing checks, immobility, incoming-hits-become-critical,
+  and resist-all-damage (petrified). Narrative clauses are the caller's.
+* Exhaustion: the six-level ladder, cumulative — disadvantage on checks
+  (1), halved speed (2), disadvantage on attacks and saves (3), halved
+  hit-point maximum (4), speed zero (5), death (6).
+* Initiative: a d20 + modifier roll per participant, ranked descending;
+  ties keep their input order (the table decides among ties); the order
+  is fixed across rounds.
+* Saving-throw effects: a save against a DC, with half damage (rounded
+  down) on a success via `saveDamage`.
 
 ## Building and testing
 

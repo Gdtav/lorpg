@@ -19,6 +19,7 @@ library
     RPG.Core.Ruleset
     RPG.Core.Types
     RPG.Core.Mechanics
+    RPG.Core.Initiative
     RPG.Rulesets.DnD5e
   hs-source-dirs:   src
   build-depends:    base >=4.14 && <5
